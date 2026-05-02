@@ -52,7 +52,14 @@ from ._format import (
     make_stream_chunk,
     make_thinking_chunk,
 )
-from .chat import _fail_sync, _quota_sync, _feedback_kind
+from .chat import (
+    _configured_retry_codes,
+    _fail_sync,
+    _feedback_kind,
+    _quota_sync,
+    _should_retry_upstream,
+)
+from app.products._account_selection import reserve_account, selection_max_retries
 
 _IMAGE_MEDIA_TYPE = "MEDIA_POST_TYPE_IMAGE"
 _VIDEO_MEDIA_TYPE = "MEDIA_POST_TYPE_VIDEO"
@@ -145,6 +152,10 @@ def _progress_reason(progress: int) -> str:
 
 def _progress_reason_delta(progress: int) -> str:
     return _progress_reason(progress) + "\n"
+
+
+def _retry_notice(attempt: int, total_attempts: int) -> str:
+    return f"视频生成重试 {attempt}/{total_attempts}，已更换账号\n"
 
 
 def _coerce_seconds(value: str | int | None) -> int:
@@ -479,6 +490,34 @@ def _exception_message(exc: BaseException) -> str:
     return str(exc)
 
 
+def _with_attempt_context(
+    exc: BaseException,
+    *,
+    attempts_run: int,
+    total_attempts: int,
+    note: str = "",
+) -> BaseException:
+    if attempts_run <= 1 and not note:
+        return exc
+
+    parts = [f"attempt {attempts_run}/{total_attempts}"]
+    if attempts_run > 1:
+        parts.append(f"retried {attempts_run - 1} time(s)")
+    if note:
+        parts.append(note)
+    suffix = " (" + "; ".join(parts) + ")"
+
+    if isinstance(exc, UpstreamError):
+        return UpstreamError(
+            f"{exc.message}{suffix}",
+            status=exc.status,
+            body=exc.details.get("body", ""),
+        )
+    if isinstance(exc, RateLimitError):
+        return RateLimitError(f"{exc.message}{suffix}")
+    return exc
+
+
 async def _collect_video_segment(
     *,
     token: str,
@@ -749,6 +788,7 @@ async def _run_video_with_account(
     *,
     model: str,
     runner: Callable[[str, float], Awaitable[Any]],
+    attempt_started_cb: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> Any:
     cfg = get_config()
     timeout_s = cfg.get_float("video.timeout", 180.0)
@@ -761,38 +801,98 @@ async def _run_video_with_account(
     if _acct_dir is None:
         raise RateLimitError("Account directory not initialised")
 
-    acct = await _acct_dir.reserve(
-        pool_candidates=spec.pool_candidates(),
-        mode_id=int(spec.mode_id),
-        now_s_override=now_s(),
-    )
-    if acct is None:
-        raise RateLimitError("No available accounts for video generation")
+    max_retries = selection_max_retries()
+    retry_codes = _configured_retry_codes(cfg)
+    total_attempts = max_retries + 1
+    excluded: list[str] = []
+    last_exc: BaseException | None = None
+    attempts_run = 0
 
-    token = acct.token
-    success = False
-    fail_exc: BaseException | None = None
-    try:
-        artifact = await runner(token, timeout_s)
-        success = True
-        return artifact
-    except BaseException as exc:
-        fail_exc = exc
-        raise
-    finally:
-        await _acct_dir.release(acct)
-        kind = (
-            FeedbackKind.SUCCESS
-            if success
-            else _feedback_kind(fail_exc)
-            if fail_exc
-            else FeedbackKind.SERVER_ERROR
+    for attempt in range(total_attempts):
+        acct, selected_mode_id = await reserve_account(
+            _acct_dir,
+            spec,
+            now_s_override=now_s(),
+            exclude_tokens=excluded or None,
         )
-        await _acct_dir.feedback(token, kind, int(spec.mode_id))
-        if success:
-            asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-        else:
-            asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+        if acct is None:
+            if last_exc is not None:
+                raise _with_attempt_context(
+                    last_exc,
+                    attempts_run=attempts_run,
+                    total_attempts=total_attempts,
+                    note="no replacement accounts available",
+                )
+            raise RateLimitError("No available accounts for video generation")
+
+        token = acct.token
+        if attempt_started_cb is not None:
+            await attempt_started_cb(attempt + 1, total_attempts)
+        logger.info(
+            "video attempt started: attempt={}/{} model={} token={}...",
+            attempt + 1,
+            total_attempts,
+            model,
+            token[:8],
+        )
+
+        success = False
+        retry = False
+        fail_exc: BaseException | None = None
+        try:
+            artifact = await runner(token, timeout_s)
+            success = True
+            return artifact
+        except UpstreamError as exc:
+            fail_exc = exc
+            last_exc = exc
+            attempts_run = attempt + 1
+            if _should_retry_upstream(exc, retry_codes) and attempt < max_retries:
+                retry = True
+                logger.warning(
+                    "video retry scheduled: attempt={}/{} status={} token={}...",
+                    attempt + 1,
+                    total_attempts,
+                    exc.status,
+                    token[:8],
+                )
+            else:
+                raise _with_attempt_context(
+                    exc,
+                    attempts_run=attempt + 1,
+                    total_attempts=total_attempts,
+                )
+        except BaseException as exc:
+            fail_exc = exc
+            last_exc = exc
+            attempts_run = attempt + 1
+            raise
+        finally:
+            await _acct_dir.release(acct)
+            kind = (
+                FeedbackKind.SUCCESS
+                if success
+                else _feedback_kind(fail_exc)
+                if fail_exc
+                else FeedbackKind.SERVER_ERROR
+            )
+            await _acct_dir.feedback(token, kind, selected_mode_id)
+            if success:
+                asyncio.create_task(_quota_sync(token, selected_mode_id))
+            else:
+                asyncio.create_task(_fail_sync(token, selected_mode_id, fail_exc))
+
+        if not retry:
+            break
+        excluded.append(token)
+
+    if last_exc is not None:
+        raise _with_attempt_context(
+            last_exc,
+            attempts_run=max(attempts_run, 1),
+            total_attempts=total_attempts,
+        )
+    raise RateLimitError("No available accounts for video generation")
 
 
 async def _put_video_job(job: _VideoJob) -> None:
@@ -835,35 +935,24 @@ async def _run_video_job(
     input_references: list[dict[str, Any]] | None = None,
 ) -> None:
     try:
-        await _set_job_status(job, status="in_progress", progress=1)
         aspect_ratio, default_resolution_name = _resolve_video_size(size)
         resolved_resolution_name = _resolve_video_resolution_name(
             resolution_name,
             default=default_resolution_name,
         )
         resolved_preset = _resolve_video_preset(preset)
-        spec = resolve_model(job.model)
 
-        from app.dataplane.account import _directory as _acct_dir
+        async def _attempt_started(attempt: int, total_attempts: int) -> None:
+            await _set_job_status(job, status="in_progress", progress=1)
+            if attempt > 1:
+                logger.info(
+                    "video job retry started: job_id={} attempt={}/{}",
+                    job.id,
+                    attempt,
+                    total_attempts,
+                )
 
-        if _acct_dir is None:
-            raise RateLimitError("Account directory not initialised")
-
-        acct = await _acct_dir.reserve(
-            pool_candidates=spec.pool_candidates(),
-            mode_id=int(spec.mode_id),
-            now_s_override=now_s(),
-        )
-        if acct is None:
-            raise RateLimitError("No available accounts for video generation")
-
-        token = acct.token
-        success = False
-        fail_exc: BaseException | None = None
-        try:
-            cfg = get_config()
-            timeout_s = cfg.get_float("video.timeout", 180.0)
-
+        async def _runner(token: str, timeout_s: float) -> tuple[_VideoArtifact, bytes]:
             async def _progress(progress: int) -> None:
                 await _set_job_status(
                     job, status="in_progress", progress=max(1, progress)
@@ -881,24 +970,13 @@ async def _run_video_job(
                 progress_cb=_progress,
             )
             raw, _mime = await _download_video_bytes(token, artifact.video_url)
-            success = True
-        except BaseException as exc:
-            fail_exc = exc
-            raise
-        finally:
-            await _acct_dir.release(acct)
-            kind = (
-                FeedbackKind.SUCCESS
-                if success
-                else _feedback_kind(fail_exc)
-                if fail_exc
-                else FeedbackKind.SERVER_ERROR
-            )
-            await _acct_dir.feedback(token, kind, int(spec.mode_id))
-            if success:
-                asyncio.create_task(_quota_sync(token, int(spec.mode_id)))
-            else:
-                asyncio.create_task(_fail_sync(token, int(spec.mode_id), fail_exc))
+            return artifact, raw
+
+        artifact, raw = await _run_video_with_account(
+            model=job.model,
+            runner=_runner,
+            attempt_started_cb=_attempt_started,
+        )
 
         path = _save_video_bytes(raw, job.id)
         async with _VIDEO_JOBS_LOCK:
@@ -1066,7 +1144,10 @@ async def completions(
     is_stream = stream if stream is not None else cfg.get_bool("features.stream", False)
     response_id = make_response_id()
 
-    async def _run(progress_cb: Callable[[int], Awaitable[None]] | None = None) -> str:
+    async def _run(
+        progress_cb: Callable[[int], Awaitable[None]] | None = None,
+        attempt_started_cb: Callable[[int, int], Awaitable[None]] | None = None,
+    ) -> str:
         async def _runner(token: str, timeout_s: float) -> str:
             artifact = await _generate_video_with_token(
                 token=token,
@@ -1086,24 +1167,45 @@ async def completions(
                 file_id=file_id,
             )
 
-        return await _run_video_with_account(model=model, runner=_runner)
+        return await _run_video_with_account(
+            model=model,
+            runner=_runner,
+            attempt_started_cb=attempt_started_cb,
+        )
 
     if is_stream:
 
         async def _sse() -> AsyncGenerator[str, None]:
-            queue: asyncio.Queue[int] = asyncio.Queue()
+            queue: asyncio.Queue[tuple[str, int | str]] = asyncio.Queue()
             last_progress = -1
 
             async def _progress(progress: int) -> None:
-                await queue.put(max(0, min(100, progress)))
+                await queue.put(("progress", max(0, min(100, progress))))
 
-            task = asyncio.create_task(_run(progress_cb=_progress))
+            async def _attempt_started(attempt: int, total_attempts: int) -> None:
+                if attempt > 1:
+                    await queue.put(("note", _retry_notice(attempt, total_attempts)))
+
+            task = asyncio.create_task(
+                _run(
+                    progress_cb=_progress,
+                    attempt_started_cb=_attempt_started,
+                )
+            )
             while not task.done() or not queue.empty():
                 try:
-                    progress = await asyncio.wait_for(queue.get(), timeout=0.1)
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
-                if progress > last_progress:
+                if kind == "note":
+                    chunk = make_thinking_chunk(
+                        response_id, model, str(payload)
+                    )
+                    yield f"data: {orjson.dumps(chunk).decode()}\n\n"
+                    last_progress = -1
+                    continue
+                progress = int(payload)
+                if progress != last_progress:
                     last_progress = progress
                     chunk = make_thinking_chunk(
                         response_id, model, _progress_reason_delta(progress)
@@ -1126,7 +1228,14 @@ async def completions(
         if not progress_updates or progress_updates[-1] != reason:
             progress_updates.append(reason)
 
-    content = await _run(progress_cb=_progress)
+    async def _attempt_started(attempt: int, total_attempts: int) -> None:
+        if attempt > 1:
+            progress_updates.append(_retry_notice(attempt, total_attempts).strip())
+
+    content = await _run(
+        progress_cb=_progress,
+        attempt_started_cb=_attempt_started,
+    )
     reasoning = "\n".join(progress_updates) if progress_updates else None
     return make_chat_response(
         model,
