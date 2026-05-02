@@ -51,8 +51,8 @@ MODELS: tuple[ModelSpec, ...] = (
 
     # === Video ==============================================================
 
-    # All account pools can generate video; use fast/basic so selection covers every pool.
-    ModelSpec("grok-imagine-video",                     ModeId.FAST,     Tier.BASIC, Capability.VIDEO,      True, "Grok Imagine Video"),
+    # Super+
+    ModelSpec("grok-imagine-video",                     ModeId.AUTO,     Tier.SUPER, Capability.VIDEO,      True, "Grok Imagine Video"),
 )
 # fmt: on
 

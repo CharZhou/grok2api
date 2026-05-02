@@ -261,7 +261,7 @@ Runtime config can also be overridden with `GROK_`-prefixed environment variable
 
 | Model | mode | tier |
 | :-- | :-- | :-- |
-| `grok-imagine-video` | `fast` | `basic` |
+| `grok-imagine-video` | `auto` | `super` |
 
 <br>
 
