@@ -103,7 +103,7 @@ class _VideoReference:
 class _VideoJob:
     id: str
     model: str
-    prompt: str
+    prompt: str | list[str]
     seconds: str
     size: str
     quality: str
@@ -174,6 +174,31 @@ def _coerce_seconds(value: str | int | None) -> int:
         ) from exc
 
 
+def _normalize_video_prompt(
+    prompt: str | list[str],
+    *,
+    param: str = "prompt",
+) -> str | list[str]:
+    if isinstance(prompt, str):
+        cleaned = prompt.strip()
+        if not cleaned:
+            raise ValidationError("prompt cannot be empty", param=param)
+        return cleaned
+
+    if not prompt:
+        raise ValidationError("prompt array cannot be empty", param=param)
+
+    cleaned_prompts: list[str] = []
+    for index, item in enumerate(prompt):
+        cleaned = str(item or "").strip()
+        if not cleaned:
+            raise ValidationError(
+                f"prompt[{index}] cannot be empty", param=param
+            )
+        cleaned_prompts.append(cleaned)
+    return cleaned_prompts
+
+
 def validate_video_length(seconds: int) -> None:
     if seconds not in _SUPPORTED_VIDEO_LENGTHS:
         allowed = ", ".join(str(item) for item in sorted(_SUPPORTED_VIDEO_LENGTHS))
@@ -221,6 +246,27 @@ def _build_segment_lengths(seconds: int) -> list[int]:
         return [10, 10, 10]
     validate_video_length(seconds)
     raise AssertionError("unreachable")
+
+
+def _resolve_segment_prompts(
+    prompt: str | list[str],
+    *,
+    seconds: int,
+    param: str = "prompt",
+) -> tuple[str | list[str], list[str]]:
+    normalized_prompt = _normalize_video_prompt(prompt, param=param)
+    segment_lengths = _build_segment_lengths(seconds)
+    segment_count = len(segment_lengths)
+
+    if isinstance(normalized_prompt, str):
+        return normalized_prompt, [normalized_prompt] * segment_count
+
+    if len(normalized_prompt) != segment_count:
+        raise ValidationError(
+            f"prompt array length must match segment count ({segment_count})",
+            param=param,
+        )
+    return normalized_prompt, list(normalized_prompt)
 
 
 def _video_create_payload(
@@ -672,7 +718,7 @@ async def _resolve_video_output(*, token: str, url: str, file_id: str) -> str:
 async def _generate_video_with_token(
     *,
     token: str,
-    prompt: str,
+    prompt: str | list[str],
     aspect_ratio: str,
     resolution_name: str,
     seconds: int,
@@ -681,6 +727,10 @@ async def _generate_video_with_token(
     input_references: list[dict[str, Any]] | None = None,
     progress_cb: Callable[[int], Awaitable[None]] | None = None,
 ) -> _VideoArtifact:
+    _, segment_prompts = _resolve_segment_prompts(
+        prompt,
+        seconds=seconds,
+    )
     references: list[_VideoReference] = []
     if input_references:
         references = await _prepare_video_references(token, input_references)
@@ -689,7 +739,7 @@ async def _generate_video_with_token(
         post = await create_media_post(
             token,
             media_type=_VIDEO_MEDIA_TYPE,
-            prompt=prompt,
+            prompt=segment_prompts[0],
             referer="https://grok.com/imagine",
         )
         post_data = post.get("post")
@@ -706,9 +756,10 @@ async def _generate_video_with_token(
     elapsed_seconds = 0
 
     for index, segment_length in enumerate(segments):
+        segment_prompt = segment_prompts[index]
         if index == 0:
             payload = _video_create_payload(
-                prompt=prompt,
+                prompt=segment_prompt,
                 parent_post_id=parent_post_id,
                 aspect_ratio=aspect_ratio,
                 resolution_name=resolution_name,
@@ -721,7 +772,7 @@ async def _generate_video_with_token(
             referer = "https://grok.com/imagine"
         else:
             payload = _video_extend_payload(
-                prompt=prompt,
+                prompt=segment_prompt,
                 parent_post_id=parent_post_id,
                 extend_post_id=extend_post_id,
                 aspect_ratio=aspect_ratio,
@@ -760,7 +811,7 @@ async def _generate_video_with_token(
 async def _run_video_generation(
     *,
     model: str,
-    prompt: str,
+    prompt: str | list[str],
     aspect_ratio: str,
     resolution_name: str,
     seconds: int,
@@ -929,7 +980,7 @@ async def _run_video_job(
     *,
     size: str,
     resolution_name: str | None,
-    prompt: str,
+    prompt: str | list[str],
     seconds: int,
     preset: str | None,
     input_references: list[dict[str, Any]] | None = None,
@@ -996,7 +1047,7 @@ async def _run_video_job(
 async def create_video(
     *,
     model: str,
-    prompt: str,
+    prompt: str | list[str],
     seconds: str | int | None = None,
     size: str | None = None,
     resolution_name: str | None = None,
@@ -1007,12 +1058,12 @@ async def create_video(
     if spec is None or not spec.enabled or not spec.is_video():
         raise ValidationError(f"Model {model!r} is not a video model", param="model")
 
-    cleaned_prompt = (prompt or "").strip()
-    if not cleaned_prompt:
-        raise ValidationError("prompt cannot be empty", param="prompt")
-
     normalized_seconds = _coerce_seconds(seconds)
     validate_video_length(normalized_seconds)
+    cleaned_prompt, _ = _resolve_segment_prompts(
+        prompt,
+        seconds=normalized_seconds,
+    )
     normalized_size = (size or "720x1280").strip()
     _aspect_ratio, default_resolution_name = _resolve_video_size(normalized_size)
     _resolve_video_resolution_name(resolution_name, default=default_resolution_name)

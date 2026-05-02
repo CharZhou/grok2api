@@ -3,7 +3,7 @@
 import base64
 import binascii
 import mimetypes
-from typing import Annotated, AsyncGenerator, AsyncIterable, Literal
+from typing import Annotated, AsyncGenerator, AsyncIterable
 
 import orjson
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
@@ -34,6 +34,70 @@ _TAG_RESPONSES = "OpenAI - Responses"
 _TAG_IMAGES = "OpenAI - Images"
 _TAG_VIDEOS = "OpenAI - Videos"
 _TAG_FILES = "OpenAI - Files"
+
+
+def _require_form_text(value: object, *, param: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValidationError(f"{param} is required", param=param)
+    return text
+
+
+def _parse_video_prompt_value(raw: str) -> str | list[str]:
+    text = raw.strip()
+    if not text:
+        raise ValidationError("prompt cannot be empty", param="prompt")
+    try:
+        parsed = orjson.loads(text)
+    except Exception:
+        return text
+    if not isinstance(parsed, list):
+        return text
+    if not parsed:
+        raise ValidationError("prompt array cannot be empty", param="prompt")
+    prompts: list[str] = []
+    for index, item in enumerate(parsed):
+        if not isinstance(item, str):
+            raise ValidationError(
+                f"prompt[{index}] must be a string", param="prompt"
+            )
+        cleaned = item.strip()
+        if not cleaned:
+            raise ValidationError(
+                f"prompt[{index}] cannot be empty", param="prompt"
+            )
+        prompts.append(cleaned)
+    return prompts
+
+
+def _extract_video_prompts(form) -> str | list[str]:
+    prompt_array_items = form.getlist("prompt[]")
+    if prompt_array_items:
+        prompts: list[str] = []
+        for index, item in enumerate(prompt_array_items):
+            cleaned = str(item or "").strip()
+            if not cleaned:
+                raise ValidationError(
+                    f"prompt[{index}] cannot be empty", param="prompt"
+                )
+            prompts.append(cleaned)
+        return prompts
+
+    prompt_items = form.getlist("prompt")
+    if not prompt_items:
+        raise ValidationError("prompt is required", param="prompt")
+    if len(prompt_items) > 1:
+        prompts: list[str] = []
+        for index, item in enumerate(prompt_items):
+            cleaned = str(item or "").strip()
+            if not cleaned:
+                raise ValidationError(
+                    f"prompt[{index}] cannot be empty", param="prompt"
+                )
+            prompts.append(cleaned)
+        return prompts
+
+    return _parse_video_prompt_value(str(prompt_items[0] or ""))
 
 
 async def _available_pools(request: Request) -> frozenset[str]:
@@ -461,24 +525,24 @@ async def image_generations(req: ImageGenerationRequest):
 
 
 @router.post("/videos", tags=[_TAG_VIDEOS], dependencies=[Depends(verify_api_key)])
-async def videos_create(
-    model: Annotated[str, Form(...)],
-    prompt: Annotated[str, Form(...)],
-    seconds: Annotated[int, Form()] = 6,
-    size: Annotated[
-        Literal["720x1280", "1280x720", "1024x1024", "1024x1792", "1792x1024"], Form()
-    ] = "720x1280",
-    resolution_name: Annotated[Literal["480p", "720p"] | None, Form()] = None,
-    preset: Annotated[
-        Literal["fun", "normal", "spicy", "custom"] | None, Form()
-    ] = None,
-    input_reference: Annotated[
-        list[UploadFile] | None, File(alias="input_reference[]")
-    ] = None,
-):
+async def videos_create(request: Request):
     from .video import create_video
 
+    form = await request.form()
+    model = _require_form_text(form.get("model"), param="model")
+    prompt = _extract_video_prompts(form)
+    seconds = form.get("seconds")
+    size = str(form.get("size") or "720x1280").strip()
+    resolution_name = (
+        str(form.get("resolution_name") or "").strip() or None
+    )
+    preset = str(form.get("preset") or "").strip() or None
+
     references_payload = None
+    input_reference = [
+        item for item in form.getlist("input_reference[]")
+        if hasattr(item, "filename") and hasattr(item, "read")
+    ]
     if input_reference:
         references_payload = [
             {"image_url": await _upload_to_data_uri(f, param="input_reference")}

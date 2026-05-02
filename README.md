@@ -573,6 +573,19 @@ curl http://localhost:8000/v1/videos \
 ```
 
 ```bash
+curl http://localhost:8000/v1/videos \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -F "model=grok-imagine-video" \
+  -F "prompt[]=第一段：穿过街区的低空推进镜头" \
+  -F "prompt[]=第二段：抬升到楼宇之间的霓虹峡谷" \
+  -F "prompt[]=第三段：拉远俯瞰整座赛博城市天际线" \
+  -F "seconds=30" \
+  -F "size=1280x720" \
+  -F "resolution_name=720p" \
+  -F "preset=normal"
+```
+
+```bash
 curl http://localhost:8000/v1/videos/<video_id> \
   -H "Authorization: Bearer $GROK2API_API_KEY"
 
@@ -588,13 +601,17 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | 字段 | 说明 |
 | :-- | :-- |
 | `model` | 视频模型，目前为 `grok-imagine-video` |
-| `prompt` | 视频生成提示词 |
+| `prompt` | 视频生成提示词；也支持数组模式：multipart 重复传 `prompt[]`，或将 `prompt` 传成 JSON 字符串数组 |
 | `seconds` | 视频长度：`6`, `10`, `12`, `16`, `20`, `30` |
 | `size` | 支持 `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` 或 `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |
 | `input_reference[]` | 可选图生视频参考图，multipart 文件字段；最多使用前 7 张 |
 | `video_id` | `POST /v1/videos` 返回的视频任务 ID，用于查询任务或下载成片 |
+
+数组模式说明：
+当 `seconds` 需要拆成多个 segment 时，`prompt[]` 数量必须与 segment 数完全一致。
+例如 `30s -> 10+10+10`，所以必须传 3 个 prompt；如果想所有 segment 共用同一个提示词，继续传单个 `prompt` 即可。
 
 <br>
 </details>

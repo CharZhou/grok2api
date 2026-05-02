@@ -572,6 +572,19 @@ curl http://localhost:8000/v1/videos \
 ```
 
 ```bash
+curl http://localhost:8000/v1/videos \
+  -H "Authorization: Bearer $GROK2API_API_KEY" \
+  -F "model=grok-imagine-video" \
+  -F "prompt[]=Segment 1: low-altitude push through the street canyon" \
+  -F "prompt[]=Segment 2: rise into a neon corridor between towers" \
+  -F "prompt[]=Segment 3: pull back to reveal the whole skyline" \
+  -F "seconds=30" \
+  -F "size=1280x720" \
+  -F "resolution_name=720p" \
+  -F "preset=normal"
+```
+
+```bash
 curl http://localhost:8000/v1/videos/<video_id> \
   -H "Authorization: Bearer $GROK2API_API_KEY"
 
@@ -587,13 +600,17 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | Field | Description |
 | :-- | :-- |
 | `model` | Video model, currently `grok-imagine-video` |
-| `prompt` | Video generation prompt |
+| `prompt` | Video generation prompt; also supports array mode via repeated multipart `prompt[]` fields, or a JSON-string array in `prompt` |
 | `seconds` | Video length: `6`, `10`, `12`, `16`, `20`, `30` |
 | `size` | Supports `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` or `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |
 | `input_reference[]` | Optional image-to-video reference multipart file field; at most the first 7 images are used |
 | `video_id` | Video job ID returned by `POST /v1/videos`; used to retrieve the job or download the final video |
+
+Array mode notes:
+When `seconds` is split into multiple segments, the number of `prompt[]` items must exactly match the segment count.
+For example, `30s -> 10+10+10`, so you must pass 3 prompts. If every segment should reuse the same prompt, keep sending a single `prompt` string.
 
 <br>
 </details>
