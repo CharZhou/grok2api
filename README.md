@@ -262,7 +262,7 @@ docker compose up -d
 
 | 模型名 | mode | tier |
 | :-- | :-- | :-- |
-| `grok-imagine-video` | `auto` | `super` |
+| `grok-imagine-video` | `fast` | `basic` |
 
 <br>
 

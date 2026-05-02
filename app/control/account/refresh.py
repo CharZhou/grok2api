@@ -255,15 +255,45 @@ class AccountRefreshService:
         now = now_ms()
         patches: dict[str, dict] = {}
         refreshed = False
+        inferred = infer_pool(windows)  # type: ignore[arg-type]
+        target_pool = inferred or record.pool
+        pool_patch = target_pool if target_pool != record.pool else None
+
+        if pool_patch:
+            logger.info(
+                "account pool updated from live quota: token={}... previous_pool={} current_pool={}",
+                record.token[:10],
+                record.pool,
+                target_pool,
+            )
 
         for mode in ALL_MODES_FULL:
             mode_id = int(mode)
             if mode_id in windows:
-                window = normalize_quota_window(record.pool, mode_id, windows[mode_id])
+                window = normalize_quota_window(target_pool, mode_id, windows[mode_id])
                 if window is None:
                     continue
                 patches[_MODE_KEYS[mode_id]] = window.to_dict()
                 refreshed = True
+            elif inferred is not None and supports_mode(target_pool, mode_id):
+                existing = qs.get(mode_id)
+                if (
+                    existing is not None
+                    and existing.total > 0
+                    and record.pool == target_pool
+                ):
+                    continue
+                default = default_quota_window(target_pool, mode_id)
+                if default is None:
+                    continue
+                patches[_MODE_KEYS[mode_id]] = QuotaWindow(
+                    remaining=default.total,
+                    total=default.total,
+                    window_seconds=default.window_seconds,
+                    reset_at=now + default.window_seconds * 1000,
+                    synced_at=now,
+                    source=QuotaSource.DEFAULT,
+                ).to_dict()
             elif apply_fallback:
                 existing = qs.get(mode_id)
                 if existing is None:
@@ -292,17 +322,6 @@ class AccountRefreshService:
 
         if not patches:
             return RefreshResult(checked=1, failed=0 if refreshed else 1)
-
-        # Infer pool type from live quota data and patch if it changed.
-        inferred = infer_pool(windows)  # type: ignore[arg-type]
-        pool_patch = inferred if inferred != record.pool else None
-        if pool_patch:
-            logger.info(
-                "account pool updated from live quota: token={}... previous_pool={} current_pool={}",
-                record.token[:10],
-                record.pool,
-                inferred,
-            )
 
         from .commands import AccountPatch
 

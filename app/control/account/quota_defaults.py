@@ -87,6 +87,12 @@ _AUTO_TOTAL_TO_POOL: dict[int, str] = {
     150: "heavy",
 }
 
+_FAST_TOTAL_TO_POOL: dict[int, str] = {
+    30: "basic",
+    140: "super",
+    400: "heavy",
+}
+
 
 def default_quota_set(pool: str) -> AccountQuotaSet:
     """Return a fresh copy of the default quota set for *pool*."""
@@ -159,16 +165,35 @@ def normalize_quota_set(pool: str, quota_set: AccountQuotaSet) -> AccountQuotaSe
     return qs
 
 
-def infer_pool(windows: dict[int, QuotaWindow]) -> str:
+def infer_pool(windows: dict[int, QuotaWindow]) -> str | None:
     """Infer pool type from live quota windows returned by the rate-limits API.
 
-    Uses ``auto.total`` (mode_id=0) as the discriminating signal.
-    Falls back to ``"basic"`` when the value is absent or unrecognised.
+    Uses ``auto.total`` (mode_id=0) as the primary discriminating signal, then
+    falls back to other uniquely identifying windows when the auto window is
+    unavailable.
     """
     auto_win = windows.get(0)
-    if auto_win is None:
-        return "basic"
-    return _AUTO_TOTAL_TO_POOL.get(auto_win.total, "basic")
+    if auto_win is not None:
+        inferred = _AUTO_TOTAL_TO_POOL.get(auto_win.total)
+        if inferred is not None:
+            return inferred
+
+    fast_win = windows.get(1)
+    if fast_win is not None:
+        inferred = _FAST_TOTAL_TO_POOL.get(fast_win.total)
+        if inferred is not None:
+            return inferred
+
+    grok_4_3_win = windows.get(4)
+    if grok_4_3_win is not None:
+        inferred = _AUTO_TOTAL_TO_POOL.get(grok_4_3_win.total)
+        if inferred is not None:
+            return inferred
+
+    heavy_win = windows.get(3)
+    if heavy_win is not None and heavy_win.total > 0:
+        return "heavy"
+    return None
 
 
 __all__ = [
