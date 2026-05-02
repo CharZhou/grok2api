@@ -389,7 +389,7 @@ curl http://localhost:8000/v1/chat/completions \
 | \|_ `size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | \|_ `response_format` | `url`, `b64_json` |
 | `video_config` | Video model parameters |
-| \|_ `seconds` | `6`, `10`, `12`, `16`, `20` |
+| \|_ `seconds` | `6`, `10`, `12`, `16`, `20`, `30` |
 | \|_ `size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | \|_ `resolution_name` | `480p`, `720p` |
 | \|_ `preset` | `fun`, `normal`, `spicy`, `custom` |
@@ -588,7 +588,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | :-- | :-- |
 | `model` | Video model, currently `grok-imagine-video` |
 | `prompt` | Video generation prompt |
-| `seconds` | Video length: `6`, `10`, `12`, `16`, `20` |
+| `seconds` | Video length: `6`, `10`, `12`, `16`, `20`, `30` |
 | `size` | Supports `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` or `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |

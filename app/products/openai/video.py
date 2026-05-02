@@ -61,7 +61,7 @@ _VIDEO_QUALITY = "standard"
 _VIDEO_OBJECT = "video"
 _VIDEO_JOB_TTL_S = 3600
 _VIDEO_EXTENSION_REF_TYPE = "ORIGINAL_REF_TYPE_VIDEO_EXTENSION"
-_SUPPORTED_VIDEO_LENGTHS = frozenset({6, 10, 12, 16, 20})
+_SUPPORTED_VIDEO_LENGTHS = frozenset({6, 10, 12, 16, 20, 30})
 _VIDEO_SIZE_MAP: dict[str, tuple[str, str]] = {
     "720x1280": ("9:16", "720p"),
     "1280x720": ("16:9", "720p"),
@@ -206,6 +206,8 @@ def _build_segment_lengths(seconds: int) -> list[int]:
         return [10, 6]
     if seconds == 20:
         return [10, 10]
+    if seconds == 30:
+        return [10, 10, 10]
     validate_video_length(seconds)
     raise AssertionError("unreachable")
 

@@ -390,7 +390,7 @@ curl http://localhost:8000/v1/chat/completions \
 | \|_ `size` | `1280x720`, `720x1280`, `1792x1024`, `1024x1792`, `1024x1024` |
 | \|_ `response_format` | `url`, `b64_json` |
 | `video_config` | 视频模型参数 |
-| \|_ `seconds` | `6`, `10`, `12`, `16`, `20` |
+| \|_ `seconds` | `6`, `10`, `12`, `16`, `20`, `30` |
 | \|_ `size` | `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | \|_ `resolution_name` | `480p`, `720p` |
 | \|_ `preset` | `fun`, `normal`, `spicy`, `custom` |
@@ -589,7 +589,7 @@ curl -L http://localhost:8000/v1/videos/<video_id>/content \
 | :-- | :-- |
 | `model` | 视频模型，目前为 `grok-imagine-video` |
 | `prompt` | 视频生成提示词 |
-| `seconds` | 视频长度：`6`, `10`, `12`, `16`, `20` |
+| `seconds` | 视频长度：`6`, `10`, `12`, `16`, `20`, `30` |
 | `size` | 支持 `720x1280`, `1280x720`, `1024x1024`, `1024x1792`, `1792x1024` |
 | `resolution_name` | `480p` 或 `720p` |
 | `preset` | `fun`, `normal`, `spicy`, `custom` |
